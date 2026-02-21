@@ -7,11 +7,19 @@
 
 #include <iostream>
 #include <fstream>
+#include <set>
 
 #include "usn_journal.h"
+#include "filesystem_scan.h"
 using namespace std;
 
 constexpr DWORD BUFFER_SIZE = 8 * 1024;
+
+struct usnChanges{
+	set<wstring> reasons;
+	filesystem::path filePath;
+	DWORD bitReasons;
+};
 
 
 FILE_ID_DESCRIPTOR getFileIdDescriptor(const DWORDLONG fileId)
@@ -86,7 +94,7 @@ void saveLastUsn(string fileName, DWORDLONG& lastUsn){
 	cout << "Writing new lastUsn: " << lastUsn << " to database\n";
 }
 
-int readJournalSince(HANDLE& volume, USN_JOURNAL_DATA& journal, DWORDLONG& lastUsn, const filesystem::path volPath){
+int readJournalSince(HANDLE& volume, USN_JOURNAL_DATA& journal, DWORDLONG& lastUsn, const filesystem::path volPath, sqlite3*& db){
 	READ_USN_JOURNAL_DATA readData{};
 	readData.StartUsn       = lastUsn;
 	readData.ReasonMask     = 0xFFFFFFFF;   // all reasons
@@ -94,6 +102,9 @@ int readJournalSince(HANDLE& volume, USN_JOURNAL_DATA& journal, DWORDLONG& lastU
 
 	BYTE readBuffer[BUFFER_SIZE];
 	DWORD bytesReturned = 0;
+
+	vector<usnChanges> seenFiles;
+
 
 	do{
 
@@ -157,22 +168,33 @@ int readJournalSince(HANDLE& volume, USN_JOURNAL_DATA& journal, DWORDLONG& lastU
 
 			GetFinalPathNameByHandle(fileHandle,filePath, MAX_PATH, 0);
 
-			filesystem::path p(filePath);
+			filesystem::path pathToUsn(filePath);
 
-			if (p.native().rfind(volPath.native(), 0) == 0) {  // path starts with targetDir
+			if (pathToUsn.native().rfind(volPath.native(), 0) == 0) {  // path starts with targetDir
 
 				DWORD reason = UsnRecord->Reason;
-				bool relevantReason = false;
 
+				set<wstring> relevantReasons;
 				for (auto& r : usnReasons) {
 					if (reason & r.mask) {
-						wcout << L"Change detected: " << r.name << L"\n";
-						relevantReason = true;
+						relevantReasons.insert(r.name);
+						//wcout << L"Change detected: " << r.name << L"\n";
 					}
 				}
-				if(relevantReason){
-					cout << p.filename() << "\n";
-					wcout << p << L"\n\n";
+				if(relevantReasons.size()){
+					bool repeat = false;
+					for (auto& item : seenFiles){
+						if(item.filePath == pathToUsn){
+							item.reasons.insert(relevantReasons.begin(), relevantReasons.end());
+							repeat = true;
+						}
+					}
+					if(!repeat){
+						usnChanges newChange;
+						newChange.filePath = pathToUsn;
+						newChange.reasons = relevantReasons;
+						seenFiles.push_back(newChange);
+					}
 				}
 			}
 			offset += UsnRecord->RecordLength;
@@ -183,6 +205,34 @@ int readJournalSince(HANDLE& volume, USN_JOURNAL_DATA& journal, DWORDLONG& lastU
 
 	} while(bytesReturned > sizeof(USN));
 	CloseHandle(volume);
+
+	wcout << L"\n";
+	for (auto& item : seenFiles){
+		wcout << item.filePath.filename().wstring() << "\n" << item.filePath.wstring() << "\n";
+		item.bitReasons = 0;
+		for (auto& reason : item.reasons){
+			for (auto& r : usnReasons) {
+				if (reason == r.name) {
+					item.bitReasons = item.bitReasons | r.mask;
+				}
+			}
+			wcout << reason << L" ";
+		}
+		wcout << item.bitReasons << L" ";
+		wcout << L"\n\n";
+		HANDLE fileHandle;
+		WIN32_FIND_DATAW fileData;
+		DWORD volumeSerial;
+		uint64_t fileIndex;
+
+		if(filesystem::is_regular_file(item.filePath)){
+			FindFirstFileW(item.filePath.c_str(), &fileData);
+			openFile(fileHandle, item.filePath);
+			getVolumeFileIndex(fileHandle, volumeSerial, fileIndex);
+			getFileDetails(item.filePath, fileHandle, fileData, db, getCurrentFolderId(db, volumeSerial, fileIndex), true);
+			CloseHandle(fileHandle);
+		}
+	}
 	return lastUsn;
 }
 

@@ -43,8 +43,6 @@ struct FSItem {
 	//Folder Only
 	//fs::path parentPath;
 
-	std::vector<std::unique_ptr<FSItem>> children;
-
 };
 
 struct Attr{
@@ -64,24 +62,6 @@ static const Attr attrs[] = {
 	{FILE_ATTRIBUTE_SPARSE_FILE, L"SPARSE_FILE"},
 	{FILE_ATTRIBUTE_REPARSE_POINT, L"REPARSE_POINT"},
 	{FILE_ATTRIBUTE_COMPRESSED, L"COMPRESSED"}
-};
-
-struct Reason {
-    DWORD mask;
-    const wchar_t* name;
-};
-
-static const Reason usnReasons[] = {
-    { USN_REASON_DATA_OVERWRITE,       L"DATA_OVERWRITE" },
-    { USN_REASON_DATA_EXTEND,          L"DATA_EXTEND" },
-    { USN_REASON_DATA_TRUNCATION,      L"DATA_TRUNCATION" },
-    { USN_REASON_FILE_CREATE,          L"FILE_CREATE" },
-    { USN_REASON_FILE_DELETE,          L"FILE_DELETE" },
-    { USN_REASON_RENAME_NEW_NAME,      L"RENAME_NEW_NAME" },
-    { USN_REASON_RENAME_OLD_NAME,      L"RENAME_OLD_NAME" },
-    { USN_REASON_BASIC_INFO_CHANGE,    L"BASIC_INFO_CHANGE" },
-    { USN_REASON_ENCRYPTION_CHANGE,    L"ENCRYPTION_CHANGE" },
-    { USN_REASON_REPARSE_POINT_CHANGE, L"REPARSE_POINT_CHANGE" }
 };
 
 

@@ -104,17 +104,20 @@ int main() {
 
 	wstring vol = GetVolumePath(folderPath);
 
-	vector<unique_ptr<FSItem>> rootItems;
 	filesystem::path targetPath = folderPath.parent_path();
 
+	int status = remove("data.db");
+	if(status != 0){
+		perror("Error deleting file");
+		return 1;
+	}
 
 	sqlite3* db = nullptr;
-
 	openDB("data.db",db);
 	initDatabase(db);
 
 	thread spinner(showSpinner);
-	//scanDirectory(targetPath, L"SuperTux", nullptr, rootItems, db, -1);
+	scanDirectory(targetPath, L"SuperTux", db, -1);
 
 	done = true;
 	spinner.join();
@@ -140,7 +143,7 @@ int main() {
 	lastUsn = 158744344;
 	cout << "Before: " << lastUsn << "\n";
 
-	lastUsn = readJournalSince(volume, journal, lastUsn, L"\\\\?\\D:\\Games\\SuperTux");
+	lastUsn = readJournalSince(volume, journal, lastUsn, L"\\\\?\\D:\\Games\\SuperTux", db);
 
 	addUsnId(lastUsn,db);
 	cout << "After: " << lastUsn << "\n";

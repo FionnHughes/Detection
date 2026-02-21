@@ -80,7 +80,7 @@ int initDatabase(sqlite3*& db) {
 			"folder_id             INTEGER,"
 			"path 			       TEXT     	NOT NULL,"
 			"filename	           TEXT     	NOT NULL,"
-			"scan_time INTEGER DEFAULT (strftime('%s','now')),"
+			"scan_time 			   INTEGER      DEFAULT (strftime('%s','now')),"
 			"volume_serial         INTEGER      NOT NULL,"
 			"file_index            INTEGER      NOT NULL,"
 			"current_snapshot_id   INTEGER,"
@@ -101,6 +101,7 @@ int initDatabase(sqlite3*& db) {
 			"atime                 INTEGER      NOT NULL,"
 			"mtime                 INTEGER      NOT NULL,"
 			"attributes            INTEGER      NOT NULL,"
+			"change                INTEGER      NOT NULL,"
 			"blob_path             TEXT,"
 			"compression           TEXT         NOT NULL,"
 			"is_known_good         INTEGER      NOT NULL	DEFAULT 0,"
@@ -131,10 +132,11 @@ int initDatabase(sqlite3*& db) {
 			"folder_snapshot_id    INTEGER 		PRIMARY KEY AUTOINCREMENT,"
 			"folder_id             INTEGER 		NOT NULL,"
 			"version_number        INTEGER 		NOT NULL,"
-			"created_at 		   INTEGER 		DEFAULT (strftime('%s','now')),"
+			"created_at 		   INTEGER 		NOT NULL,"
 			"atime                 INTEGER      NOT NULL,"
 			"mtime                 INTEGER 		NOT NULL,"
 			"attributes            INTEGER 		NOT NULL,"
+			"change                INTEGER      NOT NULL,"
 			"item_count            INTEGER 		NOT NULL,"
 			"content_hash          TEXT 		NOT NULL,"
 			"parent_snapshot_id    INTEGER,"
@@ -172,7 +174,27 @@ int initDatabase(sqlite3*& db) {
 
 	return 0;
 }
-int addFileEntry(sqlite3*& db, const unique_ptr<FSItem>& item, int folderId){
+void updateSnapshotCount(sqlite3*& db, int folderId){
+	const char* updateCountSql =
+		"UPDATE FolderSnapshots SET item_count = item_count + 1 "
+		"WHERE folder_snapshot_id = (SELECT current_folder_snapshot_id FROM Folders WHERE folder_id = ?)";
+	sqlite3_stmt* updateStmt = nullptr;
+
+	int rc = sqlite3_prepare_v2(db, updateCountSql, -1, &updateStmt, nullptr);
+	if (rc != SQLITE_OK) {
+		cerr << "Update prepare failed: " << sqlite3_errmsg(db) << "\n";
+	}
+	else {
+		sqlite3_bind_int(updateStmt, 1, folderId);
+		rc = sqlite3_step(updateStmt);
+		if (rc != SQLITE_DONE) {
+			cerr << "Update failed: " << sqlite3_errmsg(db) << "\n";
+		}
+		sqlite3_finalize(updateStmt);
+	}
+}
+
+int addFileEntry(sqlite3*& db, const FSItem& item, int folderId){
 
 	const char* insertSql =
 			"INSERT OR IGNORE INTO Files (folder_id, path, filename, volume_serial, file_index, current_snapshot_id)"
@@ -187,16 +209,16 @@ int addFileEntry(sqlite3*& db, const unique_ptr<FSItem>& item, int folderId){
 	}
 	sqlite3_bind_int(stmt, 1, folderId);
 
-	string pathStr = item->fullPath.string();
+	string pathStr = item.fullPath.string();
 	sqlite3_bind_text(stmt, 2, pathStr.c_str(), -1, SQLITE_TRANSIENT);
 
-	int len = WideCharToMultiByte(CP_UTF8, 0, item->fileName.c_str(), -1, nullptr, 0, nullptr, nullptr);
+	int len = WideCharToMultiByte(CP_UTF8, 0, item.fileName.c_str(), -1, nullptr, 0, nullptr, nullptr);
 	string nameUtf8(len - 1, '\0');
-	WideCharToMultiByte(CP_UTF8, 0, item->fileName.c_str(), -1, nameUtf8.data(), len, nullptr, nullptr);
+	WideCharToMultiByte(CP_UTF8, 0, item.fileName.c_str(), -1, nameUtf8.data(), len, nullptr, nullptr);
 
 	sqlite3_bind_text(stmt, 3, nameUtf8.c_str(), -1, SQLITE_TRANSIENT);
-	sqlite3_bind_int(stmt, 4, item->volumeSerial);
-	sqlite3_bind_int(stmt, 5, item->fileIndex);
+	sqlite3_bind_int(stmt, 4, item.volumeSerial);
+	sqlite3_bind_int(stmt, 5, item.fileIndex);
 
 	rc = sqlite3_step(stmt);
 	if (rc != SQLITE_DONE) {
@@ -210,8 +232,8 @@ int addFileEntry(sqlite3*& db, const unique_ptr<FSItem>& item, int folderId){
 		cerr << "Select prepare failed: " << sqlite3_errmsg(db) << "\n";
 		return -1;
 	}
-	sqlite3_bind_int(stmt, 1, item->volumeSerial);
-	sqlite3_bind_int(stmt, 2, item->fileIndex);
+	sqlite3_bind_int(stmt, 1, item.volumeSerial);
+	sqlite3_bind_int(stmt, 2, item.fileIndex);
 
 	int fileId = -1;
 	if ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
@@ -221,8 +243,8 @@ int addFileEntry(sqlite3*& db, const unique_ptr<FSItem>& item, int folderId){
 	sqlite3_finalize(stmt);
 
 	insertSql =
-			"INSERT INTO FileSnapshots (file_id, version_number, created_at, sha256, size_bytes, atime, mtime, attributes, blob_path, compression, is_known_good)"
-			"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+			"INSERT INTO FileSnapshots (file_id, version_number, created_at, sha256, size_bytes, atime, mtime, attributes, change, blob_path, compression, is_known_good)"
+			"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 	stmt = nullptr;
 	rc = sqlite3_prepare_v2(db,insertSql, -1, &stmt, nullptr);
 
@@ -231,14 +253,15 @@ int addFileEntry(sqlite3*& db, const unique_ptr<FSItem>& item, int folderId){
 	}
 	sqlite3_bind_int(stmt, 1, fileId);
 	sqlite3_bind_int(stmt, 2, 1);
-	sqlite3_bind_int(stmt, 3, item->created_at);
-	sqlite3_bind_text(stmt, 4, item->sha256.c_str(), -1, SQLITE_TRANSIENT);
-	sqlite3_bind_int(stmt, 5, item->byteSize);
-	sqlite3_bind_int(stmt, 6, item->atime);
-	sqlite3_bind_int(stmt, 7, item->mtime);
-	sqlite3_bind_int(stmt, 8, item->attributes);
-	sqlite3_bind_text(stmt, 10, "zstd", -1, SQLITE_TRANSIENT);
-	sqlite3_bind_int(stmt, 11, 1);
+	sqlite3_bind_int(stmt, 3, item.created_at);
+	sqlite3_bind_text(stmt, 4, item.sha256.c_str(), -1, SQLITE_TRANSIENT);
+	sqlite3_bind_int(stmt, 5, item.byteSize);
+	sqlite3_bind_int(stmt, 6, item.atime);
+	sqlite3_bind_int(stmt, 7, item.mtime);
+	sqlite3_bind_int(stmt, 8, item.attributes);
+	sqlite3_bind_int(stmt, 9, item.attributes);
+	sqlite3_bind_text(stmt, 11, "zstd", -1, SQLITE_TRANSIENT);
+	sqlite3_bind_int(stmt, 12, 1);
 
 	rc = sqlite3_step(stmt);
 	if (rc != SQLITE_DONE) {
@@ -246,11 +269,40 @@ int addFileEntry(sqlite3*& db, const unique_ptr<FSItem>& item, int folderId){
 	}
 	sqlite3_finalize(stmt);
 
+	updateSnapshotCount(db, folderId);
+
 	return 0;
 }
-int addFolderEntry(sqlite3*& db, const std::unique_ptr<FSItem>& item){
+int getCurrentFolderId(sqlite3*& db, DWORD volumeSerial, uint64_t fileIndex){
+
+
+	const char* selectSql =
+			"SELECT folder_id FROM Folders WHERE volume_serial = ? AND folder_index = ?";
+	sqlite3_stmt* stmt;
+
+	int rc = sqlite3_prepare_v2(db, selectSql, -1, &stmt, nullptr);
+	if (rc != SQLITE_OK) {
+		cerr << "Select prepare failed: " << sqlite3_errmsg(db) << "\n";
+		return -1;
+	}
+	sqlite3_bind_int(stmt, 1, volumeSerial);
+	sqlite3_bind_int(stmt, 2, fileIndex);
+
+	int newFolderId = -1;
+	if ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+		newFolderId = sqlite3_column_int(stmt, 0);
+	}
+	sqlite3_finalize(stmt);
+
+	return newFolderId;
+}
+
+
+
+
+int addFolderEntry(sqlite3*& db, const FSItem& item, int folderId){
 	const char* insertSql =
-			"INSERT OR IGNORE INTO Folders (path, filename, volume_serial, folder_index, current_folder_snapshot_id)"
+			"INSERT OR IGNORE INTO Folders (path, filename, volume_serial, folder_index, parent_folder_id)"
 			"VALUES (?, ?, ?, ?, ?)";
 
 	sqlite3_stmt* stmt = nullptr;
@@ -261,17 +313,19 @@ int addFolderEntry(sqlite3*& db, const std::unique_ptr<FSItem>& item){
 		cerr << "Prepare failed: " << sqlite3_errmsg(db) << "\n";
 	}
 
-	string pathStr = item->fullPath.string();
+	string pathStr = item.fullPath.string();
 	sqlite3_bind_text(stmt, 1, pathStr.c_str(), -1, SQLITE_TRANSIENT);
 
-	int len = WideCharToMultiByte(CP_UTF8, 0, item->fileName.c_str(), -1, nullptr, 0, nullptr, nullptr);
+	int len = WideCharToMultiByte(CP_UTF8, 0, item.fileName.c_str(), -1, nullptr, 0, nullptr, nullptr);
 	string nameUtf8(len - 1, '\0');
-	WideCharToMultiByte(CP_UTF8, 0, item->fileName.c_str(), -1, nameUtf8.data(), len, nullptr, nullptr);
+	WideCharToMultiByte(CP_UTF8, 0, item.fileName.c_str(), -1, nameUtf8.data(), len, nullptr, nullptr);
 
 	sqlite3_bind_text(stmt, 2, nameUtf8.c_str(), -1, SQLITE_TRANSIENT);
 
-	sqlite3_bind_int(stmt, 3, item->volumeSerial);
-	sqlite3_bind_int(stmt, 4, item->fileIndex);
+	sqlite3_bind_int(stmt, 3, item.volumeSerial);
+	sqlite3_bind_int(stmt, 4, item.fileIndex);
+	sqlite3_bind_int(stmt, 5, folderId);
+
 
 	rc = sqlite3_step(stmt);
 	if (rc != SQLITE_DONE) {
@@ -279,44 +333,37 @@ int addFolderEntry(sqlite3*& db, const std::unique_ptr<FSItem>& item){
 	}
 	//getting current folder id
 
+	int newFolderId = getCurrentFolderId(db, item.volumeSerial, item.fileIndex);
+
+	//getting folder_snapshot_id
 	const char* selectSql =
-			"SELECT folder_id FROM Folders WHERE volume_serial = ? AND folder_index = ?";
+			"SELECT folder_snapshot_id FROM FolderSnapshots WHERE folder_id = ?";
+	stmt = nullptr;
+
 	rc = sqlite3_prepare_v2(db, selectSql, -1, &stmt, nullptr);
 	if (rc != SQLITE_OK) {
 		cerr << "Select prepare failed: " << sqlite3_errmsg(db) << "\n";
 		return -1;
 	}
-	sqlite3_bind_int(stmt, 1, item->volumeSerial);
-	sqlite3_bind_int(stmt, 2, item->fileIndex);
+	sqlite3_bind_int(stmt, 1, newFolderId);
 
-	int folderId = -1;
+	int folderSnapshotId = -1;
 	if ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-		folderId = sqlite3_column_int(stmt, 0);
+		folderSnapshotId = sqlite3_column_int(stmt, 0);
 	}
-
 	sqlite3_finalize(stmt);
 
+	const char* updateSql =
+	    "UPDATE Folders SET current_folder_snapshot_id = ? WHERE folder_id = ?";
 
-	insertSql =
-			"INSERT INTO FolderSnapshots (folder_id, version_number, created_at, atime, mtime, attributes, item_count, content_hash, is_known_good)"
-			"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
 	stmt = nullptr;
-	rc = sqlite3_prepare_v2(db,insertSql, -1, &stmt, nullptr);
-
+	rc = sqlite3_prepare_v2(db,updateSql, -1, &stmt, nullptr);
 	if(rc != SQLITE_OK){
 		cerr << "Prepare failed: " << sqlite3_errmsg(db) << "\n";
 	}
-	sqlite3_bind_int(stmt, 1, folderId);
-	sqlite3_bind_int(stmt, 2, 1);
-	sqlite3_bind_int(stmt, 3, item->created_at);
-	sqlite3_bind_int(stmt, 4, item->atime);
-	sqlite3_bind_int(stmt, 5, item->mtime);
-	sqlite3_bind_int(stmt, 6, item->attributes);
 
-	//change item count and hash
-	sqlite3_bind_int(stmt, 7, 0);
-	sqlite3_bind_text(stmt, 8, "HASH", -1, SQLITE_TRANSIENT);
-	sqlite3_bind_int(stmt, 9, 1);
+	sqlite3_bind_int(stmt, 1, folderSnapshotId);
+	sqlite3_bind_int(stmt, 2, newFolderId);
 
 	rc = sqlite3_step(stmt);
 	if (rc != SQLITE_DONE) {
@@ -324,7 +371,39 @@ int addFolderEntry(sqlite3*& db, const std::unique_ptr<FSItem>& item){
 	}
 	sqlite3_finalize(stmt);
 
-	return folderId;
+	updateSnapshotCount(db, folderId);
+
+	return newFolderId;
+}
+
+void addFolderSnapshotEntry(sqlite3*& db, const FSItem& item, int newFolderId){
+	const char* insertSql =
+			"INSERT INTO FolderSnapshots (folder_id, version_number, created_at, atime, mtime, attributes, change, item_count, content_hash, is_known_good)"
+			"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+	sqlite3_stmt* stmt = nullptr;
+	int rc = sqlite3_prepare_v2(db,insertSql, -1, &stmt, nullptr);
+
+	if(rc != SQLITE_OK){
+		cerr << "Prepare failed: " << sqlite3_errmsg(db) << "\n";
+	}
+	sqlite3_bind_int(stmt, 1, newFolderId);
+	sqlite3_bind_int(stmt, 2, 1);
+	sqlite3_bind_int(stmt, 3, item.created_at);
+	sqlite3_bind_int(stmt, 4, item.atime);
+	sqlite3_bind_int(stmt, 5, item.mtime);
+	sqlite3_bind_int(stmt, 6, item.attributes);
+
+	//change item count and hash
+	sqlite3_bind_int(stmt, 7, 0);
+	sqlite3_bind_int(stmt, 8, 0);
+	sqlite3_bind_text(stmt, 9, "HASH", -1, SQLITE_TRANSIENT);
+	sqlite3_bind_int(stmt, 10, 1);
+
+	rc = sqlite3_step(stmt);
+	if (rc != SQLITE_DONE) {
+		std::cerr << "Insert failed: " << sqlite3_errmsg(db) << "\n";
+	}
+	sqlite3_finalize(stmt);
 }
 
 

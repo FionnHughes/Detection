@@ -69,7 +69,7 @@ int64_t filetimeToUnix(const FILETIME& ft){
 	const int64_t EPOCH_DIFF = 116444736000000000LL;
 	return (ull.QuadPart - EPOCH_DIFF) / 10000000LL;
 }
-
+/*
 void printDirectory(vector<unique_ptr<FSItem>>& items){
 	for (auto& item : items){
 		wstring typeStr;
@@ -89,8 +89,106 @@ void printDirectory(vector<unique_ptr<FSItem>>& items){
 		wcout << L"\n";
 	}
 }
+*/
 
-void scanDirectory(const filesystem::path& rootPath, const wchar_t* folderName, FSItem* parent, vector<unique_ptr<FSItem>>& container, sqlite3*& db, int folderId){
+void openFolder(HANDLE hFile, filesystem::path fullPath){
+	hFile = CreateFileW(
+			fullPath.c_str(),
+			FILE_LIST_DIRECTORY,
+			FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+			nullptr,
+			OPEN_EXISTING,
+			FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
+			nullptr
+		);
+}
+
+
+void openFile(HANDLE hFile, filesystem::path fullPath){
+	hFile = CreateFileW(
+			fullPath.c_str(),
+			GENERIC_READ,
+			FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+			nullptr,
+			OPEN_EXISTING,
+			FILE_ATTRIBUTE_NORMAL | FILE_FLAG_BACKUP_SEMANTICS,
+			nullptr
+		);
+}
+
+void getVolumeFileIndex(const HANDLE hFile, DWORD& volumeSerial, uint64_t& fileIndex){
+	BY_HANDLE_FILE_INFORMATION info;
+		if (GetFileInformationByHandle(hFile, &info)) {
+			volumeSerial = info.dwVolumeSerialNumber;
+			uint64_t idx = (static_cast<uint64_t>(info.nFileIndexHigh) << 32) | info.nFileIndexLow;
+			fileIndex = idx;
+		}
+}
+
+void getFileDetails(const filesystem::path& rootPath, HANDLE& fileHandle, WIN32_FIND_DATAW& fileData, sqlite3*& db, int folderId, bool single_entry){
+
+
+	FSItem newItem;
+	newItem.fileName = fileData.cFileName;
+
+	//creating file path
+	newItem.fullPath = rootPath / fileData.cFileName;
+
+	//getting file attributes
+	newItem.attributes = fileData.dwFileAttributes;
+
+	if (fileData.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)
+		newItem.type = ItemType::Symlink;
+	else if (fileData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+		newItem.type = ItemType::Directory;
+	else
+		newItem.type = ItemType::File;
+
+
+	if(newItem.type != ItemType::Symlink){
+		HANDLE hFile = NULL;
+		if(newItem.type == ItemType::File){
+			openFile(hFile, newItem.fullPath);
+			newItem.byteSize = (fileData.nFileSizeHigh * (MAXDWORD+1)) + fileData.nFileSizeLow;
+			newItem.sha256 = sha256_file(newItem.fullPath);
+		}
+
+		else{
+			openFolder(hFile, newItem.fullPath);
+		}
+		if(fileHandle == INVALID_HANDLE_VALUE){
+			DWORD lastError = GetLastError();
+			wcout << L"Error opening file. Error code: " << lastError << L" for " << newItem.fullPath << L"\n";
+		}
+		else{
+			getVolumeFileIndex(fileHandle, newItem.volumeSerial, newItem.fileIndex);
+
+			FILETIME created{}, accessed{}, written{};
+			GetFileTime(fileHandle, &created, &accessed, &written);
+
+			newItem.created_at = filetimeToUnix(created);
+			newItem.atime = filetimeToUnix(accessed);
+			newItem.mtime = filetimeToUnix(written);
+
+			if(newItem.type == ItemType::File){
+				file_count++;
+				addFileEntry(db, newItem, folderId);
+			}
+			else{
+				file_count++;
+				folderId = addFolderEntry(db, newItem, folderId);
+				addFolderSnapshotEntry(db, newItem, folderId);
+				if(!single_entry){
+					scanDirectory(newItem.fullPath, NULL, db, folderId);
+				}
+
+			}
+			CloseHandle(fileHandle);
+		}
+	}
+}
+
+void scanDirectory(const filesystem::path& rootPath, const wchar_t* folderName, sqlite3*& db, int folderId){
 
 
 	HANDLE fileHandle;
@@ -110,84 +208,7 @@ void scanDirectory(const filesystem::path& rootPath, const wchar_t* folderName, 
 				|| wcscmp(fileData.cFileName, L"..") == 0
 				|| (folderName && wcscmp(fileData.cFileName, folderName) != 0)) continue;
 
-		auto newItem = make_unique<FSItem>();
-		newItem->fileName = fileData.cFileName;
-
-		//creating file path
-		newItem->fullPath = rootPath / fileData.cFileName;
-
-		//getting file attributes
-		newItem->attributes = fileData.dwFileAttributes;
-
-		if (fileData.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)
-			newItem->type = ItemType::Symlink;
-		else if (fileData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
-			newItem->type = ItemType::Directory;
-		else
-			newItem->type = ItemType::File;
-
-
-		if(newItem->type != ItemType::Symlink){
-			HANDLE hFile;
-			if(newItem->type == ItemType::File){
-				newItem->byteSize = (fileData.nFileSizeHigh * (MAXDWORD+1)) + fileData.nFileSizeLow;
-
-				hFile = CreateFileW(
-						newItem->fullPath.c_str(),
-						GENERIC_READ,
-						FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-						nullptr,
-						OPEN_EXISTING,
-						FILE_ATTRIBUTE_NORMAL | FILE_FLAG_BACKUP_SEMANTICS,
-						nullptr
-					);
-				newItem->sha256 = sha256_file(newItem->fullPath);
-
-			}
-
-			else{
-
-				hFile = CreateFileW(
-						newItem->fullPath.c_str(),
-						FILE_LIST_DIRECTORY,
-						FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-						nullptr,
-						OPEN_EXISTING,
-						FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
-						nullptr
-					);
-			}
-			if(hFile == INVALID_HANDLE_VALUE){
-				DWORD lastError = GetLastError();
-				wcout << L"Error opening file. Error code: " << lastError << L" for " << newItem->fullPath << L"\n";
-			}
-			else{
-				BY_HANDLE_FILE_INFORMATION info;
-				if (GetFileInformationByHandle(hFile, &info)) {
-					newItem->volumeSerial = info.dwVolumeSerialNumber;
-					uint64_t fileIndex = (static_cast<uint64_t>(info.nFileIndexHigh) << 32) | info.nFileIndexLow;
-					newItem->fileIndex = fileIndex;
-				}
-				FILETIME created{}, accessed{}, written{};
-				GetFileTime(hFile, &created, &accessed, &written);
-
-				newItem->created_at = filetimeToUnix(created);
-				newItem->atime = filetimeToUnix(accessed);
-				newItem->mtime = filetimeToUnix(written);
-
-				if(newItem->type == ItemType::File){
-					file_count++;
-					addFileEntry(db, newItem, folderId);
-				}
-				else{
-					file_count++;
-					int folderId = addFolderEntry(db, newItem);
-					scanDirectory(newItem->fullPath, NULL, newItem.get(), newItem->children, db, folderId);
-				}
-				CloseHandle(hFile);
-			}
-		}
-		container.push_back(move(newItem));
+		getFileDetails(rootPath, fileHandle, fileData, db, folderId, false);
 
 	} while (FindNextFileW(fileHandle, &fileData));
 	FindClose(fileHandle);
