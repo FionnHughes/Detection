@@ -17,10 +17,10 @@
 
 
 void scanDirectory(const std::filesystem::path& rootPath, const wchar_t* folderName, sqlite3*& db, int folderId);
-void getFileDetails(const std::filesystem::path& rootPath, HANDLE& fileHandle, WIN32_FIND_DATAW& fileData, sqlite3*& db, int folderId, bool single_entry);
+void getFileDetails(const std::filesystem::path& rootPath, HANDLE& fileHandle, WIN32_FIND_DATAW& fileData, sqlite3*& db, int folderId, int good);
 
-void openFolder(HANDLE hFile, std::filesystem::path fullPath);
-void openFile(HANDLE hFile, std::filesystem::path fullPath);
+HANDLE openFolder(std::filesystem::path fullPath);
+HANDLE openFile(std::filesystem::path fullPath);
 
 void getVolumeFileIndex(const HANDLE hFile, DWORD& volumeSerial, uint64_t& fileIndex);
 

@@ -194,10 +194,29 @@ void updateSnapshotCount(sqlite3*& db, int folderId){
 	}
 }
 
+int getCurrentFileId(sqlite3*& db, DWORD volumeSerial, uint64_t fileIndex){
+	const char* selectSql =
+			"SELECT file_id FROM Files WHERE volume_serial = ? AND file_index = ?";
+	sqlite3_stmt* stmt = nullptr;
+	int rc = sqlite3_prepare_v2(db, selectSql, -1, &stmt, nullptr);
+	if (rc != SQLITE_OK) {
+		cerr << "Select prepare failed: " << sqlite3_errmsg(db) << "\n";
+		return -1;
+	}
+	sqlite3_bind_int(stmt, 1, volumeSerial);
+	sqlite3_bind_int(stmt, 2, fileIndex);
+
+	int fileId = -1;
+	if ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+		fileId = sqlite3_column_int(stmt, 0);
+	}
+	return fileId;
+}
+
 int addFileEntry(sqlite3*& db, const FSItem& item, int folderId){
 
 	const char* insertSql =
-			"INSERT OR IGNORE INTO Files (folder_id, path, filename, volume_serial, file_index, current_snapshot_id)"
+			"INSERT INTO Files (folder_id, path, filename, volume_serial, file_index, current_snapshot_id)"
 			"VALUES (?, ?, ?, ?, ?, ?)";
 
 	sqlite3_stmt* stmt = nullptr;
@@ -225,28 +244,20 @@ int addFileEntry(sqlite3*& db, const FSItem& item, int folderId){
 	    std::cerr << "Insert failed: " << sqlite3_errmsg(db) << "\n";
 	}
 
-	const char* selectSql =
-			"SELECT file_id FROM Files WHERE volume_serial = ? AND file_index = ?";
-	rc = sqlite3_prepare_v2(db, selectSql, -1, &stmt, nullptr);
-	if (rc != SQLITE_OK) {
-		cerr << "Select prepare failed: " << sqlite3_errmsg(db) << "\n";
-		return -1;
-	}
-	sqlite3_bind_int(stmt, 1, item.volumeSerial);
-	sqlite3_bind_int(stmt, 2, item.fileIndex);
-
-	int fileId = -1;
-	if ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-		fileId = sqlite3_column_int(stmt, 0);
-	}
 
 	sqlite3_finalize(stmt);
 
-	insertSql =
+	updateSnapshotCount(db, folderId);
+
+	return 0;
+}
+
+void addFileSnapshotEntry(sqlite3*& db, const FSItem& item, int fileId, int good){
+	const char* insertSql =
 			"INSERT INTO FileSnapshots (file_id, version_number, created_at, sha256, size_bytes, atime, mtime, attributes, change, blob_path, compression, is_known_good)"
 			"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-	stmt = nullptr;
-	rc = sqlite3_prepare_v2(db,insertSql, -1, &stmt, nullptr);
+	sqlite3_stmt* stmt = nullptr;
+	int rc = sqlite3_prepare_v2(db,insertSql, -1, &stmt, nullptr);
 
 	if(rc != SQLITE_OK){
 		cerr << "Prepare failed: " << sqlite3_errmsg(db) << "\n";
@@ -269,10 +280,9 @@ int addFileEntry(sqlite3*& db, const FSItem& item, int folderId){
 	}
 	sqlite3_finalize(stmt);
 
-	updateSnapshotCount(db, folderId);
-
-	return 0;
 }
+
+
 int getCurrentFolderId(sqlite3*& db, DWORD volumeSerial, uint64_t fileIndex){
 
 
@@ -302,7 +312,7 @@ int getCurrentFolderId(sqlite3*& db, DWORD volumeSerial, uint64_t fileIndex){
 
 int addFolderEntry(sqlite3*& db, const FSItem& item, int folderId){
 	const char* insertSql =
-			"INSERT OR IGNORE INTO Folders (path, filename, volume_serial, folder_index, parent_folder_id)"
+			"INSERT INTO Folders (path, filename, volume_serial, folder_index, parent_folder_id)"
 			"VALUES (?, ?, ?, ?, ?)";
 
 	sqlite3_stmt* stmt = nullptr;
@@ -376,7 +386,7 @@ int addFolderEntry(sqlite3*& db, const FSItem& item, int folderId){
 	return newFolderId;
 }
 
-void addFolderSnapshotEntry(sqlite3*& db, const FSItem& item, int newFolderId){
+void addFolderSnapshotEntry(sqlite3*& db, const FSItem& item, int newFolderId, int good){
 	const char* insertSql =
 			"INSERT INTO FolderSnapshots (folder_id, version_number, created_at, atime, mtime, attributes, change, item_count, content_hash, is_known_good)"
 			"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
@@ -397,7 +407,7 @@ void addFolderSnapshotEntry(sqlite3*& db, const FSItem& item, int newFolderId){
 	sqlite3_bind_int(stmt, 7, 0);
 	sqlite3_bind_int(stmt, 8, 0);
 	sqlite3_bind_text(stmt, 9, "HASH", -1, SQLITE_TRANSIENT);
-	sqlite3_bind_int(stmt, 10, 1);
+	sqlite3_bind_int(stmt, 10, good);
 
 	rc = sqlite3_step(stmt);
 	if (rc != SQLITE_DONE) {
@@ -405,6 +415,3 @@ void addFolderSnapshotEntry(sqlite3*& db, const FSItem& item, int newFolderId){
 	}
 	sqlite3_finalize(stmt);
 }
-
-
-

@@ -91,8 +91,8 @@ void printDirectory(vector<unique_ptr<FSItem>>& items){
 }
 */
 
-void openFolder(HANDLE hFile, filesystem::path fullPath){
-	hFile = CreateFileW(
+HANDLE openFolder(filesystem::path fullPath){
+	return CreateFileW(
 			fullPath.c_str(),
 			FILE_LIST_DIRECTORY,
 			FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
@@ -104,8 +104,8 @@ void openFolder(HANDLE hFile, filesystem::path fullPath){
 }
 
 
-void openFile(HANDLE hFile, filesystem::path fullPath){
-	hFile = CreateFileW(
+HANDLE openFile(filesystem::path fullPath){
+	return CreateFileW(
 			fullPath.c_str(),
 			GENERIC_READ,
 			FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
@@ -125,7 +125,7 @@ void getVolumeFileIndex(const HANDLE hFile, DWORD& volumeSerial, uint64_t& fileI
 		}
 }
 
-void getFileDetails(const filesystem::path& rootPath, HANDLE& fileHandle, WIN32_FIND_DATAW& fileData, sqlite3*& db, int folderId, bool single_entry){
+void getFileDetails(const filesystem::path& rootPath, HANDLE& fileHandle, WIN32_FIND_DATAW& fileData, sqlite3*& db, int folderId, int good){
 
 
 	FSItem newItem;
@@ -146,25 +146,25 @@ void getFileDetails(const filesystem::path& rootPath, HANDLE& fileHandle, WIN32_
 
 
 	if(newItem.type != ItemType::Symlink){
-		HANDLE hFile = NULL;
+		HANDLE hFile;
 		if(newItem.type == ItemType::File){
-			openFile(hFile, newItem.fullPath);
+			hFile = openFile(newItem.fullPath);
 			newItem.byteSize = (fileData.nFileSizeHigh * (MAXDWORD+1)) + fileData.nFileSizeLow;
 			newItem.sha256 = sha256_file(newItem.fullPath);
 		}
 
 		else{
-			openFolder(hFile, newItem.fullPath);
+			hFile = openFolder(newItem.fullPath);
 		}
-		if(fileHandle == INVALID_HANDLE_VALUE){
+		if(hFile == INVALID_HANDLE_VALUE){
 			DWORD lastError = GetLastError();
 			wcout << L"Error opening file. Error code: " << lastError << L" for " << newItem.fullPath << L"\n";
 		}
 		else{
-			getVolumeFileIndex(fileHandle, newItem.volumeSerial, newItem.fileIndex);
+			getVolumeFileIndex(hFile, newItem.volumeSerial, newItem.fileIndex);
 
 			FILETIME created{}, accessed{}, written{};
-			GetFileTime(fileHandle, &created, &accessed, &written);
+			GetFileTime(hFile, &created, &accessed, &written);
 
 			newItem.created_at = filetimeToUnix(created);
 			newItem.atime = filetimeToUnix(accessed);
@@ -172,18 +172,23 @@ void getFileDetails(const filesystem::path& rootPath, HANDLE& fileHandle, WIN32_
 
 			if(newItem.type == ItemType::File){
 				file_count++;
-				addFileEntry(db, newItem, folderId);
+
+				if(good){
+					addFileEntry(db, newItem, folderId);
+				}
+				int fileId = getCurrentFileId(db, newItem.volumeSerial, newItem.fileIndex);
+				addFileSnapshotEntry(db, newItem, fileId, good);
 			}
 			else{
 				file_count++;
-				folderId = addFolderEntry(db, newItem, folderId);
-				addFolderSnapshotEntry(db, newItem, folderId);
-				if(!single_entry){
+				if(good){
+					folderId = addFolderEntry(db, newItem, folderId);
 					scanDirectory(newItem.fullPath, NULL, db, folderId);
 				}
+				addFolderSnapshotEntry(db, newItem, folderId, good);
 
 			}
-			CloseHandle(fileHandle);
+			CloseHandle(hFile);
 		}
 	}
 }
@@ -208,7 +213,7 @@ void scanDirectory(const filesystem::path& rootPath, const wchar_t* folderName, 
 				|| wcscmp(fileData.cFileName, L"..") == 0
 				|| (folderName && wcscmp(fileData.cFileName, folderName) != 0)) continue;
 
-		getFileDetails(rootPath, fileHandle, fileData, db, folderId, false);
+		getFileDetails(rootPath, fileHandle, fileData, db, folderId, 1);
 
 	} while (FindNextFileW(fileHandle, &fileData));
 	FindClose(fileHandle);

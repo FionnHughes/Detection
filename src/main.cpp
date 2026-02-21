@@ -106,7 +106,8 @@ int main() {
 
 	filesystem::path targetPath = folderPath.parent_path();
 
-	int status = remove("data.db");
+	int status = 0;
+	status = remove("data.db");
 	if(status != 0){
 		perror("Error deleting file");
 		return 1;
@@ -126,7 +127,7 @@ int main() {
 	HANDLE volume = openVolume(vol);
 
 	if (volume == INVALID_HANDLE_VALUE)
-		wcout << L"Error opening file. Error code: " << GetLastError() << L" for " << "\\\\.\\D:" << L"\n";
+		wcout << L"Error opening file. Error code: " << GetLastError() << L" for " << vol << L"\n";
 
 	USN_JOURNAL_DATA journal{};
 	DWORD bytesReturned = 0;

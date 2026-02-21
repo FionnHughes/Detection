@@ -224,14 +224,19 @@ int readJournalSince(HANDLE& volume, USN_JOURNAL_DATA& journal, DWORDLONG& lastU
 		WIN32_FIND_DATAW fileData;
 		DWORD volumeSerial;
 		uint64_t fileIndex;
+		FindFirstFileW(item.filePath.c_str(), &fileData);
 
 		if(filesystem::is_regular_file(item.filePath)){
-			FindFirstFileW(item.filePath.c_str(), &fileData);
-			openFile(fileHandle, item.filePath);
-			getVolumeFileIndex(fileHandle, volumeSerial, fileIndex);
-			getFileDetails(item.filePath, fileHandle, fileData, db, getCurrentFolderId(db, volumeSerial, fileIndex), true);
-			CloseHandle(fileHandle);
+
+			fileHandle = openFile(item.filePath);
+
 		}
+		else{
+			fileHandle = openFolder(item.filePath);
+		}
+		getVolumeFileIndex(fileHandle, volumeSerial, fileIndex);
+		getFileDetails(item.filePath.parent_path(), fileHandle, fileData, db, getCurrentFolderId(db, volumeSerial, fileIndex), 0);
+		CloseHandle(fileHandle);
 	}
 	return lastUsn;
 }
