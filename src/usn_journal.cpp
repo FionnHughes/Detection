@@ -11,7 +11,7 @@
 #include "usn_journal.h"
 using namespace std;
 
-constexpr DWORD BUFFER_SIZE = 4 * 1024;
+constexpr DWORD BUFFER_SIZE = 8 * 1024;
 
 
 FILE_ID_DESCRIPTOR getFileIdDescriptor(const DWORDLONG fileId)
@@ -86,7 +86,7 @@ void saveLastUsn(string fileName, DWORDLONG& lastUsn){
 	cout << "Writing new lastUsn: " << lastUsn << " to database\n";
 }
 
-void readJournalSince(HANDLE& volume, USN_JOURNAL_DATA& journal, DWORDLONG& lastUsn, const filesystem::path volPath){
+int readJournalSince(HANDLE& volume, USN_JOURNAL_DATA& journal, DWORDLONG& lastUsn, const filesystem::path volPath){
 	READ_USN_JOURNAL_DATA readData{};
 	readData.StartUsn       = lastUsn;
 	readData.ReasonMask     = 0xFFFFFFFF;   // all reasons
@@ -110,18 +110,28 @@ void readJournalSince(HANDLE& volume, USN_JOURNAL_DATA& journal, DWORDLONG& last
 
 		if (!readOk) {
 			cerr << "Failed to read USN journal. Error: " << GetLastError() << "\n";
-			return;
-		} else {
-			cout << "USN journal read successfully.\n";
+			return -1;
+		}
+		if (bytesReturned <= sizeof(USN)) {
+			// No records
+			break;
 		}
 
+		USN* nextUsn = (USN*)readBuffer;
 		DWORD offset = sizeof(USN);
 
-		cout << "Bytes returned: "<< bytesReturned << "\n\n";
+		//cout << "Bytes returned: "<< bytesReturned << ". Offset is: " << offset << "\n\n";
 
 		while (offset < bytesReturned) {
 			//cout << "Offset: " << offset << "\n";
 			USN_RECORD* UsnRecord = (USN_RECORD*)(readBuffer + offset);
+			std::wstring fname(UsnRecord->FileName, UsnRecord->FileNameLength / sizeof(WCHAR));
+
+			if ( fname.find(L"FVE2.") == 0) {
+				offset += UsnRecord->RecordLength;
+				lastUsn = UsnRecord->Usn;
+				continue;
+			}
 
 			FILE_ID_DESCRIPTOR fileId = getFileIdDescriptor(UsnRecord->FileReferenceNumber);
 
@@ -134,6 +144,17 @@ void readJournalSince(HANDLE& volume, USN_JOURNAL_DATA& journal, DWORDLONG& last
 				nullptr,
 				FILE_FLAG_BACKUP_SEMANTICS
 			);
+
+			if (fileHandle == INVALID_HANDLE_VALUE) {
+				DWORD err = GetLastError();
+				if (err == ERROR_INVALID_PARAMETER) {
+					//wcout << L"USN Record could not be opened (error: " << err << L") -- file name: " << fname << L"\n";
+				}
+				offset += UsnRecord->RecordLength;
+				lastUsn = UsnRecord->Usn;
+				continue;
+			}
+
 			GetFinalPathNameByHandle(fileHandle,filePath, MAX_PATH, 0);
 
 			filesystem::path p(filePath);
@@ -155,14 +176,13 @@ void readJournalSince(HANDLE& volume, USN_JOURNAL_DATA& journal, DWORDLONG& last
 				}
 			}
 			offset += UsnRecord->RecordLength;
-			lastUsn = UsnRecord->Usn;
+			lastUsn = UsnRecord->Usn+offset;
 			CloseHandle(fileHandle);
-
-			readData.StartUsn = lastUsn;
 		}
+		readData.StartUsn = *nextUsn;
 
-	} while(bytesReturned <= sizeof(USN));
+	} while(bytesReturned > sizeof(USN));
 	CloseHandle(volume);
-
+	return lastUsn;
 }
 

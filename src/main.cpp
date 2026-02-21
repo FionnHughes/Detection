@@ -13,6 +13,7 @@
 #include <thread>
 #include <filesystem>
 #include <fstream>
+#include <shobjidl.h>
 
 #include "usn_journal.h"
 #include "filesystem_scan.h"
@@ -22,7 +23,61 @@
 #include "state.h"
 
 using namespace std;
-namespace fs = std::filesystem;
+
+
+bool fileExists (const string& name) {
+    if (FILE *file = fopen(name.c_str(), "r")) {
+        fclose(file);
+        return true;
+    } else {
+        return false;
+    }
+}
+
+wstring GetVolumePath(filesystem::path& path){
+	filesystem::path root = path.root_name();
+	if (root.empty()) return L"";
+
+	return L"\\\\.\\" + root.wstring();   // "\\.\D:"
+
+}
+
+filesystem::path OpenFolderPicker()
+{
+    IFileDialog* pfd = nullptr;
+    wstring result;
+
+    HRESULT hr = CoCreateInstance(
+        CLSID_FileOpenDialog,
+        nullptr,
+        CLSCTX_INPROC_SERVER,
+        IID_PPV_ARGS(&pfd)
+    );
+
+    if (SUCCEEDED(hr))
+    {
+        DWORD options;
+        pfd->GetOptions(&options);
+        pfd->SetOptions(options | FOS_PICKFOLDERS);
+
+        if (SUCCEEDED(pfd->Show(nullptr)))
+        {
+            IShellItem* item;
+            if (SUCCEEDED(pfd->GetResult(&item)))
+            {
+            	PWSTR path = nullptr;
+				if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path)))
+				{
+					result = filesystem::path(path);   // <-- convert to filesystem::path
+					CoTaskMemFree(path);
+				}
+				item->Release();
+            }
+        }
+        pfd->Release();
+    }
+    return result;
+}
 
 
 void showSpinner(){
@@ -39,10 +94,33 @@ void showSpinner(){
 
 int main() {
 
-	vector<unique_ptr<FSItem>> rootItems;
-	fs::path targetPath = L"\\\\?\\D:\\Games";
+	CoInitialize(nullptr);
+	//filesystem::path folderPath = OpenFolderPicker();
+	CoUninitialize();
 
-	HANDLE volume = openVolume(L"\\\\.\\D:");
+	filesystem::path folderPath = "D:\\Games\\SuperTux";
+
+	wcout << folderPath.wstring() << "\n";
+
+	wstring vol = GetVolumePath(folderPath);
+
+	vector<unique_ptr<FSItem>> rootItems;
+	filesystem::path targetPath = folderPath.parent_path();
+
+
+	sqlite3* db = nullptr;
+
+	openDB("data.db",db);
+	initDatabase(db);
+
+	thread spinner(showSpinner);
+	//scanDirectory(targetPath, L"SuperTux", nullptr, rootItems, db, -1);
+
+	done = true;
+	spinner.join();
+
+
+	HANDLE volume = openVolume(vol);
 
 	if (volume == INVALID_HANDLE_VALUE)
 		wcout << L"Error opening file. Error code: " << GetLastError() << L" for " << "\\\\.\\D:" << L"\n";
@@ -55,24 +133,20 @@ int main() {
 
 	DWORDLONG lastUsn = journal.NextUsn;
 
-	loadLastUsn("LastUSN.txt",lastUsn);
-	lastUsn = 156856088;
+	cout << "Very last: " << lastUsn << "\n";
 
-	readJournalSince(volume, journal, lastUsn, L"\\\\?\\D:\\Games\\SuperTux");
+	lastUsn = loadUsnId(lastUsn, db);
+	//lastUsn = 156856088;
+	lastUsn = 158744344;
+	cout << "Before: " << lastUsn << "\n";
 
-	saveLastUsn("LastUSN.txt",lastUsn);
+	lastUsn = readJournalSince(volume, journal, lastUsn, L"\\\\?\\D:\\Games\\SuperTux");
 
-	sqlite3* db = nullptr;
+	addUsnId(lastUsn,db);
+	cout << "After: " << lastUsn << "\n";
 
-	openDB("data.db",db);
 
-	initDatabase(db);
 
-	thread spinner(showSpinner);
-	scanDirectory(targetPath, L"SuperTux", nullptr, rootItems, db, -1);
-
-	done = true;
-	spinner.join();
 
 	sqlite3_close(db);
 

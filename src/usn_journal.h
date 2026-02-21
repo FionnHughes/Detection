@@ -16,10 +16,10 @@ HANDLE openVolume(const std::wstring& volPath);
 
 int queryJournal(HANDLE volume, USN_JOURNAL_DATA& journalData, DWORD& bytesReturned);
 
-void loadLastUsn(std::string fileName, DWORDLONG& lastUsn);
+//void loadLastUsn(std::string fileName, DWORDLONG& lastUsn);
 
 void saveLastUsn(std::string fileName, DWORDLONG& lastUsn);
 
-void readJournalSince(HANDLE& volume, USN_JOURNAL_DATA& journal, DWORDLONG& lastUsn, const std::filesystem::path volPath);
+int readJournalSince(HANDLE& volume, USN_JOURNAL_DATA& journal, DWORDLONG& lastUsn, const std::filesystem::path volPath);
 
 #endif /* USN_JOURNAL_H_ */

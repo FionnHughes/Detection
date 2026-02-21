@@ -28,8 +28,8 @@ struct FSItem {
 	std::wstring fileName;
 	ItemType type;
 	std::filesystem::path fullPath;
-	FILETIME LastAccessTime;
-	FILETIME LastWriteTime;
+	int64_t atime;
+	int64_t mtime;
 	DWORD attributes;
 	int64_t created_at;
 	FSItem* parent = nullptr;

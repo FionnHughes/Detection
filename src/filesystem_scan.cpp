@@ -116,16 +116,6 @@ void scanDirectory(const filesystem::path& rootPath, const wchar_t* folderName, 
 		//creating file path
 		newItem->fullPath = rootPath / fileData.cFileName;
 
-		//YYYY-MM-DD HH:MM:SS time format
-
-		//for snapshots so is attributes kind of
-		/*
-		//getting time
-		newItem->LastAccessTime = fileData.ftLastAccessTime;
-		newItem->LastWriteTime = fileData.ftLastWriteTime;
-		*/
-
-
 		//getting file attributes
 		newItem->attributes = fileData.dwFileAttributes;
 
@@ -178,10 +168,13 @@ void scanDirectory(const filesystem::path& rootPath, const wchar_t* folderName, 
 					uint64_t fileIndex = (static_cast<uint64_t>(info.nFileIndexHigh) << 32) | info.nFileIndexLow;
 					newItem->fileIndex = fileIndex;
 				}
-				FILETIME created{};
-				GetFileTime(hFile, &created, nullptr, nullptr);
+				FILETIME created{}, accessed{}, written{};
+				GetFileTime(hFile, &created, &accessed, &written);
 
 				newItem->created_at = filetimeToUnix(created);
+				newItem->atime = filetimeToUnix(accessed);
+				newItem->mtime = filetimeToUnix(written);
+
 				if(newItem->type == ItemType::File){
 					file_count++;
 					addFileEntry(db, newItem, folderId);
