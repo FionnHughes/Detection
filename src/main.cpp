@@ -92,37 +92,57 @@ void showSpinner(){
 	cout << "\rLoading " << file_count <<" files done!      \n";
 }
 
+bool isFirstRun() {
+    HKEY hKey;
+    DWORD val = 0;
+
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\MyApp", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        DWORD size = sizeof(val);
+        RegQueryValueExW(hKey, L"FirstRunDone", nullptr, nullptr, (LPBYTE)&val, &size);
+        RegCloseKey(hKey);
+    }
+
+    if (val == 0) {
+        return true;
+    }
+
+    return false;
+}
+
+void completeFirstRun(){
+	HKEY hKey;
+	RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\MyApp", 0, nullptr, 0, KEY_WRITE, nullptr, &hKey, nullptr);
+	int val = 1;
+	RegSetValueExW(hKey, L"FirstRunDone", 0, REG_DWORD, (const BYTE*)&val, sizeof(val));
+	RegCloseKey(hKey);
+
+}
+
+void resetFirstRun(){
+	LPCWSTR keyPath = L"Software\\MyApp";
+
+	LONG result = RegDeleteKeyW(HKEY_CURRENT_USER, keyPath);
+
+	if (result == ERROR_SUCCESS) {
+		std::wcout << L"Key deleted successfully.\n";
+	} else if (result == ERROR_FILE_NOT_FOUND) {
+		std::wcout << L"Key does not exist.\n";
+	} else {
+		std::wcout << L"Failed to delete key. Error code: " << result << L"\n";
+	}
+
+}
+
 int main() {
 
-	CoInitialize(nullptr);
-	//filesystem::path folderPath = OpenFolderPicker();
-	CoUninitialize();
-
 	filesystem::path folderPath = "D:\\Games\\SuperTux";
-
-	wcout << folderPath.wstring() << "\n";
 
 	wstring vol = GetVolumePath(folderPath);
 
 	filesystem::path targetPath = folderPath.parent_path();
 
-	int status = 0;
-	status = remove("data.db");
-	if(status != 0){
-		perror("Error deleting file");
-		return 1;
-	}
-
 	sqlite3* db = nullptr;
 	openDB("data.db",db);
-	initDatabase(db);
-
-	thread spinner(showSpinner);
-	scanDirectory(targetPath, L"SuperTux", db, -1);
-
-	done = true;
-	spinner.join();
-
 
 	HANDLE volume = openVolume(vol);
 
@@ -135,26 +155,45 @@ int main() {
 	int queryOk = queryJournal(volume,journal,bytesReturned);
 	if(!queryOk) return 1;
 
-	DWORDLONG lastUsn = journal.NextUsn;
+	resetFirstRun();
 
-	cout << "Very last: " << lastUsn << "\n";
+	if(isFirstRun()){
+		CoInitialize(nullptr);
+		filesystem::path folderPath = OpenFolderPicker();
+		CoUninitialize();
 
-	lastUsn = loadUsnId(lastUsn, db);
-	//lastUsn = 156856088;
-	lastUsn = 158744344;
+		/*
+		int status = remove("data.db");
+		if(status != 0){
+			perror("Error deleting file");
+			return 1;
+		}*/
+		initDatabase(db);
+
+		thread spinner(showSpinner);
+		scanDirectory(folderPath, targetPath, L"SuperTux", db, -1);
+
+		done = true;
+		spinner.join();
+
+		DWORDLONG lastUsn = journal.NextUsn;
+		addUsnId(lastUsn,db);
+
+		completeFirstRun();
+	}
+
+
+	DWORDLONG lastUsn = loadUsnId(lastUsn, db);
+	lastUsn = 158775624;
+	//lastUsn = 158744344;
 	cout << "Before: " << lastUsn << "\n";
 
-	lastUsn = readJournalSince(volume, journal, lastUsn, L"\\\\?\\D:\\Games\\SuperTux", db);
+	lastUsn = readJournalSince(volume, journal, lastUsn, folderPath, db);
 
 	addUsnId(lastUsn,db);
 	cout << "After: " << lastUsn << "\n";
 
-
-
-
 	sqlite3_close(db);
-
-	//printDirectory(rootItems);
 
 	return 0;
 }

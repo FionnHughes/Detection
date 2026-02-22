@@ -94,7 +94,19 @@ void saveLastUsn(string fileName, DWORDLONG& lastUsn){
 	cout << "Writing new lastUsn: " << lastUsn << " to database\n";
 }
 
+filesystem::path normalize(const filesystem::path& p)
+{
+    std::wstring s = p.native();
+
+    // strip \\?\ prefix if present
+    if (s.rfind(L"\\\\?\\", 0) == 0)
+        s.erase(0, 4);
+
+    return filesystem::weakly_canonical(filesystem::path(s));
+}
+
 int readJournalSince(HANDLE& volume, USN_JOURNAL_DATA& journal, DWORDLONG& lastUsn, const filesystem::path volPath, sqlite3*& db){
+
 	READ_USN_JOURNAL_DATA readData{};
 	readData.StartUsn       = lastUsn;
 	readData.ReasonMask     = 0xFFFFFFFF;   // all reasons
@@ -105,6 +117,7 @@ int readJournalSince(HANDLE& volume, USN_JOURNAL_DATA& journal, DWORDLONG& lastU
 
 	vector<usnChanges> seenFiles;
 
+	cout << "-------------------" << volPath << "\n";
 
 	do{
 
@@ -170,7 +183,12 @@ int readJournalSince(HANDLE& volume, USN_JOURNAL_DATA& journal, DWORDLONG& lastU
 
 			filesystem::path pathToUsn(filePath);
 
-			if (pathToUsn.native().rfind(volPath.native(), 0) == 0) {  // path starts with targetDir
+			pathToUsn = normalize(pathToUsn);
+			//cout << pathToUsn << "\n";
+
+
+
+			if (std::mismatch(volPath.begin(), volPath.end(), pathToUsn.begin()).first == volPath.end()) {  // path starts with targetDir
 
 				DWORD reason = UsnRecord->Reason;
 
@@ -198,7 +216,7 @@ int readJournalSince(HANDLE& volume, USN_JOURNAL_DATA& journal, DWORDLONG& lastU
 				}
 			}
 			offset += UsnRecord->RecordLength;
-			lastUsn = UsnRecord->Usn+offset;
+			lastUsn = UsnRecord->Usn;
 			CloseHandle(fileHandle);
 		}
 		readData.StartUsn = *nextUsn;
@@ -235,7 +253,14 @@ int readJournalSince(HANDLE& volume, USN_JOURNAL_DATA& journal, DWORDLONG& lastU
 			fileHandle = openFolder(item.filePath);
 		}
 		getVolumeFileIndex(fileHandle, volumeSerial, fileIndex);
-		getFileDetails(item.filePath.parent_path(), fileHandle, fileData, db, getCurrentFolderId(db, volumeSerial, fileIndex), 0);
+		FSItem newData;
+
+		newData.change = item.bitReasons;
+
+
+
+
+		getFileDetails(volPath, item.filePath.parent_path(), fileHandle, fileData, db, getCurrentFolderId(db, volumeSerial, fileIndex), 0, newData);
 		CloseHandle(fileHandle);
 	}
 	return lastUsn;

@@ -15,10 +15,8 @@
 #include "database.h"
 #include "types.h"
 
-
-void scanDirectory(const std::filesystem::path& rootPath, const wchar_t* folderName, sqlite3*& db, int folderId);
-void getFileDetails(const std::filesystem::path& rootPath, HANDLE& fileHandle, WIN32_FIND_DATAW& fileData, sqlite3*& db, int folderId, int good);
-
+void scanDirectory(const std::filesystem::path& rootPath, const std::filesystem::path& thisPath, const wchar_t* folderName, sqlite3*& db, int folderId);
+void getFileDetails(const std::filesystem::path& rootPath, const std::filesystem::path& thisPath, HANDLE& fileHandle, WIN32_FIND_DATAW& fileData, sqlite3*& db, int folderId, int good, FSItem newItem = {});
 HANDLE openFolder(std::filesystem::path fullPath);
 HANDLE openFile(std::filesystem::path fullPath);
 

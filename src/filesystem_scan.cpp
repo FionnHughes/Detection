@@ -12,11 +12,15 @@
 #include <atomic>
 #include <iostream>
 #include <time.h>
+#include <zstd.h>
+#include <vector>
 
 #include "filesystem_scan.h"
 #include "state.h"
 
 using namespace std;
+
+constexpr size_t CHUNK_SIZE = 1024 * 1024;
 
 string sha256_file(const filesystem::path& path){
 	ifstream file(path, ios::binary);
@@ -51,6 +55,61 @@ string sha256_file(const filesystem::path& path){
 	return ss.str();
 }
 
+bool compressFileZstdStream(const filesystem::path& srcPath, const filesystem::path& dstPath, int compressionLevel = 3) {
+	ZSTD_CCtx* cctx = ZSTD_createCCtx();
+	if (!cctx) {
+	    // Handle error: Could not create compression context
+	    return 1;
+	}
+
+	std::ifstream src(srcPath, std::ios::binary);
+	if (!src) return false;
+	std::ofstream dst(dstPath, std::ios::binary);
+	if (!dst) return false;
+
+	ZSTD_CStream* cstream = ZSTD_createCStream();
+	if (!cstream) return false;
+	if (ZSTD_isError(ZSTD_initCStream(cstream, compressionLevel))) {
+		ZSTD_freeCStream(cstream);
+		return false;
+	}
+
+	std::vector<char> inBuf(CHUNK_SIZE);
+	std::vector<char> outBuf(ZSTD_CStreamOutSize());
+	size_t toRead = inBuf.size();
+
+	while (src) {
+		src.read(inBuf.data(), toRead);
+		std::streamsize inSize = src.gcount();
+
+		ZSTD_inBuffer input = { inBuf.data(), static_cast<size_t>(inSize), 0 };
+		while (input.pos < input.size) {
+			ZSTD_outBuffer output = { outBuf.data(), outBuf.size(), 0 };
+			size_t ret = ZSTD_compressStream(cstream, &output, &input);
+			if (ZSTD_isError(ret)) {
+				ZSTD_freeCStream(cstream);
+				return false;
+			}
+			dst.write(outBuf.data(), output.pos);
+		}
+	}
+	// FINALIZE: Flush and close stream
+	int finished = 0;
+	while (!finished) {
+		ZSTD_outBuffer output = { outBuf.data(), outBuf.size(), 0 };
+		size_t ret = ZSTD_endStream(cstream, &output);
+		if (ZSTD_isError(ret)) {
+			ZSTD_freeCStream(cstream);
+			return false;
+		}
+		dst.write(outBuf.data(), output.pos);
+		finished = (ret == 0);
+	}
+	ZSTD_freeCStream(cstream);
+	return true;
+
+}
+
 
 void getAttributes(DWORD fileAttrs) {
 	for( Attr attr : attrs){
@@ -69,27 +128,6 @@ int64_t filetimeToUnix(const FILETIME& ft){
 	const int64_t EPOCH_DIFF = 116444736000000000LL;
 	return (ull.QuadPart - EPOCH_DIFF) / 10000000LL;
 }
-/*
-void printDirectory(vector<unique_ptr<FSItem>>& items){
-	for (auto& item : items){
-		wstring typeStr;
-		 switch (item->type) {
-			case ItemType::File: typeStr = L"File"; break;
-			case ItemType::Directory: typeStr = L"Directory"; break;
-			case ItemType::Symlink: typeStr = L"Symlink"; break;
-		}
-		wcout << typeStr << L"\n";
-		wcout << L"Name: " << item->fileName << L"\n";
-		wcout << L"Path: " << item->fullPath << L"\n";
-		wcout << L"Attributes: ";
-		getAttributes(item->attributes);
-		if (item->type == ItemType::File){
-			wcout << L"File size: " << item->byteSize << L"\n";
-		}
-		wcout << L"\n";
-	}
-}
-*/
 
 HANDLE openFolder(filesystem::path fullPath){
 	return CreateFileW(
@@ -125,14 +163,33 @@ void getVolumeFileIndex(const HANDLE hFile, DWORD& volumeSerial, uint64_t& fileI
 		}
 }
 
-void getFileDetails(const filesystem::path& rootPath, HANDLE& fileHandle, WIN32_FIND_DATAW& fileData, sqlite3*& db, int folderId, int good){
 
+filesystem::path removePrefix(const filesystem::path& full, const filesystem::path& prefix) {
+    auto fullIt   = full.begin();
+    auto prefixIt = prefix.begin();
 
-	FSItem newItem;
+    while (fullIt != full.end() && prefixIt != prefix.end() && *fullIt == *prefixIt) {
+        ++fullIt;
+        ++prefixIt;
+    }
+
+    // prefix didn’t fully match
+    if (prefixIt != prefix.end())
+        return full;
+
+    filesystem::path result;
+    for (; fullIt != full.end(); ++fullIt)
+        result /= *fullIt;
+
+    return result;
+}
+
+void getFileDetails(const filesystem::path& rootPath, const filesystem::path& thisPath, HANDLE& fileHandle, WIN32_FIND_DATAW& fileData, sqlite3*& db, int folderId, int good, FSItem newItem){
+
 	newItem.fileName = fileData.cFileName;
 
 	//creating file path
-	newItem.fullPath = rootPath / fileData.cFileName;
+	newItem.fullPath = thisPath / fileData.cFileName;
 
 	//getting file attributes
 	newItem.attributes = fileData.dwFileAttributes;
@@ -144,6 +201,12 @@ void getFileDetails(const filesystem::path& rootPath, HANDLE& fileHandle, WIN32_
 	else
 		newItem.type = ItemType::File;
 
+	std::filesystem::path dstDir = "files";
+	std::filesystem::path dstPath = dstDir / removePrefix(newItem.fullPath,rootPath);
+	dstPath.replace_extension(".zst");
+
+	filesystem::create_directory(dstPath.parent_path());
+
 
 	if(newItem.type != ItemType::Symlink){
 		HANDLE hFile;
@@ -151,6 +214,11 @@ void getFileDetails(const filesystem::path& rootPath, HANDLE& fileHandle, WIN32_
 			hFile = openFile(newItem.fullPath);
 			newItem.byteSize = (fileData.nFileSizeHigh * (MAXDWORD+1)) + fileData.nFileSizeLow;
 			newItem.sha256 = sha256_file(newItem.fullPath);
+
+
+
+			newItem.blobPath = dstPath;
+			compressFileZstdStream(newItem.fullPath, dstPath);
 		}
 
 		else{
@@ -178,14 +246,21 @@ void getFileDetails(const filesystem::path& rootPath, HANDLE& fileHandle, WIN32_
 				}
 				int fileId = getCurrentFileId(db, newItem.volumeSerial, newItem.fileIndex);
 				addFileSnapshotEntry(db, newItem, fileId, good);
+				if (good) {
+					updateFileId(db, fileId);
+				}
+
 			}
 			else{
 				file_count++;
 				if(good){
 					folderId = addFolderEntry(db, newItem, folderId);
-					scanDirectory(newItem.fullPath, NULL, db, folderId);
+					scanDirectory(rootPath, newItem.fullPath, NULL, db, folderId);
 				}
 				addFolderSnapshotEntry(db, newItem, folderId, good);
+				if (good) {
+					updateFolderId(db, folderId);
+				}
 
 			}
 			CloseHandle(hFile);
@@ -193,13 +268,13 @@ void getFileDetails(const filesystem::path& rootPath, HANDLE& fileHandle, WIN32_
 	}
 }
 
-void scanDirectory(const filesystem::path& rootPath, const wchar_t* folderName, sqlite3*& db, int folderId){
+void scanDirectory(const filesystem::path& rootPath, const filesystem::path& thisPath, const wchar_t* folderName, sqlite3*& db, int folderId){
 
 
 	HANDLE fileHandle;
 	WIN32_FIND_DATAW fileData;
 
-	filesystem::path search = rootPath / L"*";
+	filesystem::path search = thisPath / L"*";
 
 	fileHandle = FindFirstFileW(search.c_str(), &fileData);
 
@@ -213,7 +288,7 @@ void scanDirectory(const filesystem::path& rootPath, const wchar_t* folderName, 
 				|| wcscmp(fileData.cFileName, L"..") == 0
 				|| (folderName && wcscmp(fileData.cFileName, folderName) != 0)) continue;
 
-		getFileDetails(rootPath, fileHandle, fileData, db, folderId, 1);
+		getFileDetails(rootPath, thisPath, fileHandle, fileData, db, folderId, 1);
 
 	} while (FindNextFileW(fileHandle, &fileData));
 	FindClose(fileHandle);

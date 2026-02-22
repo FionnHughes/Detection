@@ -23,7 +23,6 @@ enum class ItemType {
     Symlink
 };
 
-
 struct FSItem {
 	std::wstring fileName;
 	ItemType type;
@@ -39,6 +38,9 @@ struct FSItem {
 	//File Only
 	int byteSize = 0;
 	std::string sha256;
+
+	DWORD change;
+	std::filesystem::path blobPath;
 
 	//Folder Only
 	//fs::path parentPath;
